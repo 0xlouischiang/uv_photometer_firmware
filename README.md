@@ -1,7 +1,5 @@
 # UV Absorbance Photometer Firmware 
 
-![alt text](/images/open_colorimeter.png)
-
 Firmware (circuitpython) for IO Rodeo's UV absorbance photometer (in development).
 
 ## Requirements 
