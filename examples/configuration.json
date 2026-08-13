@@ -2,5 +2,5 @@
   "gain" : "1024x",
   "integration_time" : "32ms",
   "startup" : "Absorbance",
-  "channel" : "UVC",
-} 
+  "channel" : "UVC"
+}

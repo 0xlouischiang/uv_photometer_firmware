@@ -221,5 +221,5 @@ class MeasureScreen:
         self.chan_label.text = constants.CHANNEL_TO_STR[channel]
 
     def show(self):
-        board.DISPLAY.show(self.group)
+        board.DISPLAY.root_group = self.group
 
