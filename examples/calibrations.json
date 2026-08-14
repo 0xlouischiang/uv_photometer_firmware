@@ -24,6 +24,21 @@
         "min": 0.0
       },
       "channel": 2
-    }
+    },
+  "NH3-N": {
+    "units": "mg/L N",
+    "led": "255",
+    "fit_type": "polynomial",
+    "fit_coef": [
+      0.0,
+      30.3,
+      0.0
+    ],
+    "range": {
+      "min": 0.0,
+      "max": 1.4
+    },
+    "channel": 2
+  }
 }
 
