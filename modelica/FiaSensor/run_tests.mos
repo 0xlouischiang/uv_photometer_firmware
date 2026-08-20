@@ -1,0 +1,137 @@
+// Self-check runner for the FiaSensor package. Run from this directory:
+//   omc.exe run_tests.mos
+// (or `"C:\Program Files\OpenModelica1.25.4-64bit\bin\omc.exe" run_tests.mos`
+// if omc.exe is not on PATH). Exits 0 if every check passes, nonzero
+// otherwise -- same pass/fail-by-exit-code contract as
+// mech/gd_cell/gd_cell.py's self_check(), adapted to what a .mos script can
+// actually do: a plain `function` declaration is rejected directly in a
+// .mos file ("No viable alternative near token: function") -- it has to go
+// through loadString() -- so checkClose below is defined that way, and each
+// check line inlines the pass/fail bookkeeping instead of nesting further
+// function calls.
+//
+// State enumeration order (FiaStates.mo, must match fia_constants.py::State):
+// IDLE=1 PRIME=2 BASELINE=3 LOAD=4 INJECT=5 ACQUIRE=6 ANALYZE=7 WASH=8 FAULT=9
+
+failCount := 0;
+checkCount := 0;
+
+loadString("
+function checkClose
+  input String label;
+  input Real actual;
+  input Real expected;
+  input Real tol;
+  output Boolean ok;
+algorithm
+  ok := abs(actual - expected) <= tol;
+  print((if ok then \"  [ok] \" else \"  [FAIL] \") + label + \" (got \" + String(actual) + \", expected \" + String(expected) + \" +/- \" + String(tol) + \")\\n\");
+end checkClose;
+");
+errs := getErrorString();
+if errs <> "" then
+  print("Failed to define checkClose:\n" + errs + "\n");
+  exit(1);
+end if;
+
+loadFile("package.mo");
+errs := getErrorString();
+if errs <> "" then
+  print("Load errors:\n" + errs + "\n");
+  exit(1);
+end if;
+print("package.mo loaded OK\n\n");
+
+// --- TestSequencer: state dwell times vs FiaSettings.DEFAULTS ---
+// TestSequencer.mo uses FiaSequencer's real defaults, including
+// cyclePeriodS=900 -- IDLE does not leave until t=900, so every check
+// below is offset by that, not by the states' own durations from t=0:
+// IDLE->PRIME@900, PRIME->BASELINE@960 (+primeS=60), BASELINE->LOAD@970
+// (+baselineS=10), LOAD->ACQUIRE@985 (+loadS=15, via the transient
+// INJECT state, which stamps t0=985 here), ACQUIRE->WASH@1055
+// (+acquireS=70, measured from t0 not from ACQUIRE's own entry),
+// WASH->IDLE@1055 (absorbanceIn=0 clears wash_threshold=0.002
+// immediately, no dwell in WASH).
+print("=== TestSequencer ===\n");
+r := simulate(FiaSensor.Test.TestSequencer, stopTime=1100, numberOfIntervals=5500);
+f := r.resultFile;
+if f == "" then
+  print("  [FAIL] simulation did not finish successfully:\n" + r.messages + "\n" + getErrorString() + "\n");
+  failCount := failCount + 1;
+  checkCount := checkCount + 1;
+else
+  checkCount := checkCount + 1; if not checkClose("state at t=930 is PRIME", val(seq.state, 930, f), 2, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("state at t=965 is BASELINE", val(seq.state, 965, f), 3, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("state at t=975 is LOAD", val(seq.state, 975, f), 4, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("state at t=990 is ACQUIRE", val(seq.state, 990, f), 6, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("injectionCount at t=990 is 1", val(seq.injectionCount, 990, f), 1, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("state at t=1054 is ACQUIRE", val(seq.state, 1054, f), 6, 0.01) then failCount := failCount + 1; end if;
+  checkCount := checkCount + 1; if not checkClose("state at t=1056 is IDLE (washed out)", val(seq.state, 1056, f), 1, 0.01) then failCount := failCount + 1; end if;
+end if;
+print("\n");
+
+// --- TestGdCell: donor->acceptor transfer fraction at doc flow rates ---
+print("=== TestGdCell ===\n");
+r := simulate(FiaSensor.Test.TestGdCell, stopTime=60);
+f := r.resultFile;
+if f == "" then
+  print("  [FAIL] simulation did not finish successfully:\n" + r.messages + "\n");
+  failCount := failCount + 1;
+  checkCount := checkCount + 1;
+else
+  cIn := val(gd.cInDonor, 60, f);
+  cAcc := val(gd.cAcceptorOut, 60, f);
+  flowDonor := val(gd.flowDonor, 60, f);
+  flowAcceptor := val(gd.flowAcceptor, 60, f);
+  // steady-state donor mass rate in = flowDonor*cIn; transferred mass rate
+  // out the acceptor side at steady state = flowAcceptor*cAcc (acceptor's
+  // only outflow is its own through-flow, cInAcceptor=0) -- ratio should
+  // converge to targetTransferFraction=0.25 (design doc section 3).
+  transferFrac := (flowAcceptor*cAcc)/(flowDonor*cIn);
+  checkCount := checkCount + 1; if not checkClose("steady-state transfer fraction is 0.25", transferFrac, 0.25, 0.005) then failCount := failCount + 1; end if;
+end if;
+print("\n");
+
+// --- TestFullCycle: peak lands in [20,50] s after t0, plausible mg/L-N ---
+print("=== TestFullCycle ===\n");
+r := simulate(FiaSensor.Test.TestFullCycle, stopTime=100, numberOfIntervals=2000);
+f := r.resultFile;
+if f == "" then
+  print("  [FAIL] simulation did not finish successfully:\n" + r.messages + "\n");
+  failCount := failCount + 1;
+  checkCount := checkCount + 1;
+else
+  // t0 lands wherever primeS/baselineS/loadS put it under the shortened
+  // durations in TestFullCycle's extends clause (5+2+3=10 s); scan for
+  // the peak time and height directly from the trace rather than assuming
+  // it, since this is exactly the thing being checked, not an input.
+  peakA := 0.0;
+  peakT := 0.0;
+  for tt in 10.0:0.5:100.0 loop
+    a := val(absorbance, tt, f);
+    if a > peakA then
+      peakA := a;
+      peakT := tt;
+    end if;
+  end for;
+  t0 := val(seq.t0, 100, f);
+  dtPeak := peakT - t0;
+  checkCount := checkCount + 1; if not checkClose("peak-to-t0 lands in [20,50] s window (midpoint check)", dtPeak, 35, 15) then failCount := failCount + 1; end if;
+  print("  peak absorbance = " + String(peakA) + " AU at t=" + String(peakT) + " (t0=" + String(t0) + ")\n");
+  mgLN := peakA/30.3;
+  plausible := mgLN >= 0.0 and mgLN <= 45.0;
+  checkCount := checkCount + 1;
+  print((if plausible then "  [ok] " else "  [FAIL] ") + "back-converted concentration is plausible (0-45 mg/L-N): " + String(mgLN) + "\n");
+  if not plausible then
+    failCount := failCount + 1;
+  end if;
+end if;
+print("\n");
+
+print("self-check: " + String(checkCount - failCount) + "/" + String(checkCount) + " passed\n");
+if failCount > 0 then
+  print("SELF-CHECK FAILED: " + String(failCount) + " of " + String(checkCount) + "\n");
+  exit(1);
+else
+  exit(0);
+end if;
